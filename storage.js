@@ -5,25 +5,27 @@ const defaultState = {
   auth: { passwordHash: "" },
   currentWorkspace: "Personal",
   workspaces: {
-    Personal:      { theme: "violet" },
-    Business:      { theme: "emerald" },
-    Content:       { theme: "orange" },
+    Personal:       { theme: "violet" },
+    Business:       { theme: "emerald" },
+    Content:        { theme: "orange" },
     "SaaS Projects":{ theme: "blue" },
-    "Dog Training":{ theme: "pink" }
+    "Dog Training": { theme: "pink" }
   },
-  passwords: [],
-  emails: [],
-  socialAccounts: [],
-  youtubeData: [],
+  // Core vault data
+  passwords: [],       // { title, username, password, category, url, notes }
   notes: [],
   documents: [],
-  projects: [],
+  // Service credentials stored as structured vaults
+  serviceKeys: [],     // { service, label, fields: [{key, value}], category, date }
+  emails: [],
+  socialAccounts: [],  // { platform, username, password, email, apiKey, notes }
+  youtubeData: [],
   aiMemory: [],
   contentIdeas: [],
   brandAssets: [],
   clients: [],
   domains: [],
-  repoTokens: { github: "", vercel: "" },
+  projects: [],
   activity: []
 };
 
@@ -32,9 +34,7 @@ const storage = {
     try {
       const raw = localStorage.getItem(STORAGE_KEY);
       if (!raw) { this.set(defaultState); return structuredClone(defaultState); }
-      // Merge with defaults to handle new fields
-      const saved = JSON.parse(raw);
-      return Object.assign(structuredClone(defaultState), saved);
+      return Object.assign(structuredClone(defaultState), JSON.parse(raw));
     } catch { return structuredClone(defaultState); }
   },
   set(s) { localStorage.setItem(STORAGE_KEY, JSON.stringify(s)); },
