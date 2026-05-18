@@ -1,0 +1,55 @@
+{
+  "name": "vault-os",
+  "version": "1.0.0",
+  "description": "Private AI Digital Vault OS",
+  "main": "electron-main.js",
+  "scripts": {
+    "electron": "electron .",
+    "build-win": "electron-builder --win",
+    "build-mac": "electron-builder --mac",
+    "build-linux": "electron-builder --linux",
+    "build-all": "electron-builder --win --mac --linux"
+  },
+  "build": {
+    "appId": "com.vaultos.app",
+    "productName": "Vault OS",
+    "icon": "icon-512.png",
+    "files": [
+      "index.html",
+      "install.html",
+      "styles.css",
+      "storage.js",
+      "ui.js",
+      "modules.js",
+      "app.js",
+      "sw.js",
+      "manifest.json",
+      "icon-192.png",
+      "icon-512.png",
+      "electron-main.js"
+    ],
+    "win": {
+      "target": [{ "target": "nsis", "arch": ["x64"] }],
+      "icon": "icon-512.png"
+    },
+    "mac": {
+      "target": [{ "target": "dmg", "arch": ["x64", "arm64"] }],
+      "icon": "icon-512.png",
+      "category": "public.app-category.productivity"
+    },
+    "linux": {
+      "target": [{ "target": "AppImage", "arch": ["x64"] }],
+      "icon": "icon-512.png",
+      "category": "Utility"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "installerIcon": "icon-512.png"
+    }
+  },
+  "devDependencies": {
+    "electron": "^28.0.0",
+    "electron-builder": "^24.0.0"
+  }
+}
