@@ -1,4 +1,4 @@
-// ─── In-memory RC state (tokens never hit localStorage) ───────────────────────
+// ─── In-memory RC state (tokens never written to localStorage directly) ───────
 let _rcGhToken = '';
 let _rcVcToken = '';
 let _rcRepos = [];
@@ -39,10 +39,14 @@ async function vcFetch(path, opts={}) {
   return res.json();
 }
 async function vcAllProjects() {
-  let all=[],until; while(true){ const d=await vcFetch('/v9/projects?limit=100'+(until?'&until='+until:'')); all=all.concat(d.projects); if(!d.pagination?.next||!d.projects.length) break; until=d.pagination.next; } return all;
+  let all=[],until;
+  while(true){ const d=await vcFetch('/v9/projects?limit=100'+(until?'&until='+until:'')); all=all.concat(d.projects); if(!d.pagination?.next||!d.projects.length) break; until=d.pagination.next; }
+  return all;
 }
 async function vcAllDeploys() {
-  let all=[],until; while(true){ const d=await vcFetch('/v6/deployments?limit=100'+(until?'&until='+until:'')); all=all.concat(d.deployments); if(!d.pagination?.next||!d.deployments.length) break; until=d.pagination.next; } return all;
+  let all=[],until;
+  while(true){ const d=await vcFetch('/v6/deployments?limit=100'+(until?'&until='+until:'')); all=all.concat(d.deployments); if(!d.pagination?.next||!d.deployments.length) break; until=d.pagination.next; }
+  return all;
 }
 
 // ─── App controller ───────────────────────────────────────────────────────────
@@ -65,6 +69,12 @@ const appController = {
     }
     if (CryptoJS.SHA256(pw).toString() !== state.auth.passwordHash) { ui.toast('Wrong password','err'); return; }
     storage.session.set({ authenticated: true });
+    // Auto-load saved RC tokens into memory on login
+    const rc = (storage.get().serviceKeys||[]).find(k=>k.service==='repo_cleaner');
+    if (rc) {
+      _rcGhToken = (rc.fields||[]).find(f=>f.key==='github_token')?.value || '';
+      _rcVcToken = (rc.fields||[]).find(f=>f.key==='vercel_token')?.value || '';
+    }
     this.render();
   },
 
@@ -83,45 +93,127 @@ const appController = {
       : '<div style="color:#64748b;padding:40px;text-align:center;">Module not found</div>';
   },
 
-  // Merge in-memory RC data into state for rendering (never persisted)
   _stateWithRC() {
     const s = storage.get();
-    s._rcGhToken = _rcGhToken;
-    s._rcVcToken = _rcVcToken;
-    s._rcRepos = _rcRepos;
-    s._rcProjects = _rcProjects;
-    s._rcDeploys = _rcDeploys;
-    s._rcLoading = _rcLoading;
-    s._rcTab = _rcTab;
+    s._rcGhToken   = _rcGhToken;
+    s._rcVcToken   = _rcVcToken;
+    s._rcRepos     = _rcRepos;
+    s._rcProjects  = _rcProjects;
+    s._rcDeploys   = _rcDeploys;
+    s._rcLoading   = _rcLoading;
+    s._rcTab       = _rcTab;
+    s._socialTab   = this._socialTab || null;
     return s;
   },
+
+  _socialTab: null,
+  socialTab(id) { this._socialTab = id; this.renderModule(); },
 
   switchModule(name) { this.currentModule = name; this.render(); },
   switchWorkspace(name) { storage.update(s=>{ s.currentWorkspace=name; }); this.render(); },
   lock() { storage.session.clear(); _rcGhToken=''; _rcVcToken=''; ui.renderLogin(); },
 
-  // ── Passwords
+  // ── Service Keys (credentials saved to vault) ─────────────────────────────
+  saveServiceKey(service, label, category) {
+    // Collect all input fields for this service (id = service_key)
+    const inputs = document.querySelectorAll(`[id^="${service}_"]`);
+    const fields = [];
+    inputs.forEach(el => {
+      const key = el.id.replace(service+'_', '');
+      const value = el.value.trim();
+      if (value) fields.push({ key, value });
+    });
+    if (!fields.length) { ui.toast('Enter at least one field','err'); return; }
+
+    storage.update(s => {
+      if (!s.serviceKeys) s.serviceKeys = [];
+      const idx = s.serviceKeys.findIndex(k=>k.service===service);
+      const entry = { service, label, category, fields, date: new Date().toISOString() };
+      if (idx>=0) s.serviceKeys[idx] = entry;
+      else s.serviceKeys.unshift(entry);
+      s.activity.unshift({ text: `Saved credentials: ${label}`, date: new Date().toISOString() });
+    });
+
+    // If saving RC tokens, also update in-memory
+    if (service === 'repo_cleaner') {
+      _rcGhToken = fields.find(f=>f.key==='github_token')?.value || '';
+      _rcVcToken = fields.find(f=>f.key==='vercel_token')?.value || '';
+    }
+
+    ui.toast(`✓ ${label} saved to vault`, 'ok');
+    this.renderModule();
+  },
+
+  deleteServiceKey(service) {
+    storage.update(s=>{ s.serviceKeys=(s.serviceKeys||[]).filter(k=>k.service!==service); });
+    if (service==='repo_cleaner') { _rcGhToken=''; _rcVcToken=''; }
+    ui.toast('Credentials removed','ok');
+    this.renderModule();
+  },
+
+  // ── Passwords ─────────────────────────────────────────────────────────────
   addPassword() {
     const t=document.getElementById('pwTitle')?.value?.trim();
     const u=document.getElementById('pwUser')?.value?.trim();
     const p=document.getElementById('pwPass')?.value?.trim();
-    if (!t||!p) { ui.toast('Title and password required','err'); return; }
-    storage.update(s=>{ s.passwords.unshift({title:t,username:u,password:p}); s.activity.unshift({text:`Added password: ${t}`,date:new Date().toISOString()}); });
+    const cat=document.getElementById('pwCat')?.value||'General';
+    const url=document.getElementById('pwUrl')?.value?.trim();
+    const notes=document.getElementById('pwNotes')?.value?.trim();
+    if (!t||!p) { ui.toast('Title and password are required','err'); return; }
+    storage.update(s=>{
+      s.passwords.unshift({title:t,username:u,password:p,category:cat,url,notes,date:new Date().toISOString()});
+      s.activity.unshift({text:`Added password: ${t}`,date:new Date().toISOString()});
+    });
     this.renderModule(); ui.toast('Password saved','ok');
   },
-  deletePassword(i) {
-    ui.openModal('Delete Password?','This cannot be undone.','DELETE',()=>{
-      storage.update(s=>{ s.passwords.splice(i,1); });
+
+  copyPw(i, type) {
+    const s = storage.get();
+    let val = '';
+    if (type==='pw') val = s.passwords[i]?.password;
+    else if (type==='sk') val = (s.serviceKeys[i]?.fields||[]).map(f=>f.key+': '+f.value).join('\n');
+    if (val) { navigator.clipboard.writeText(val); ui.toast('Copied!','ok'); }
+  },
+
+  revealPw(i, type, btn) {
+    const s = storage.get();
+    const el = document.getElementById(`pw-reveal-${type}-${i}`);
+    if (!el) return;
+    if (el.style.display==='none') {
+      let val = '';
+      if (type==='pw') val = s.passwords[i]?.password || '';
+      else if (type==='sk') val = (s.serviceKeys[i]?.fields||[]).map(f=>f.key+': '+f.value).join(' | ');
+      el.textContent = val;
+      el.style.display = 'block';
+      btn.textContent = '🙈';
+    } else {
+      el.style.display = 'none';
+      btn.textContent = '👁';
+    }
+  },
+
+  deleteEntry(i, type) {
+    const label = type==='pw' ? 'password' : 'service key';
+    ui.openModal(`Delete ${label}?`, 'This cannot be undone.', 'DELETE', ()=>{
+      storage.update(s=>{
+        if (type==='pw') s.passwords.splice(i,1);
+        else s.serviceKeys.splice(i,1);
+      });
       this.renderModule(); ui.toast('Deleted','ok');
     });
   },
 
-  // ── Notes
+  deletePassword(i) { this.deleteEntry(i,'pw'); },
+
+  // ── Notes ─────────────────────────────────────────────────────────────────
   addNote() {
     const t=document.getElementById('noteTitle')?.value?.trim();
     const b=document.getElementById('noteBody')?.value?.trim();
     if (!t) { ui.toast('Title required','err'); return; }
-    storage.update(s=>{ s.notes.unshift({title:t,body:b,date:new Date().toISOString()}); s.activity.unshift({text:`Added note: ${t}`,date:new Date().toISOString()}); });
+    storage.update(s=>{
+      s.notes.unshift({title:t,body:b,date:new Date().toISOString()});
+      s.activity.unshift({text:`Added note: ${t}`,date:new Date().toISOString()});
+    });
     this.renderModule(); ui.toast('Note saved','ok');
   },
   deleteNote(i) {
@@ -131,12 +223,15 @@ const appController = {
     });
   },
 
-  // ── Documents
+  // ── Documents ─────────────────────────────────────────────────────────────
   addDocument() {
     const t=document.getElementById('docTitle')?.value?.trim();
     const b=document.getElementById('docBody')?.value?.trim();
     if (!t) { ui.toast('Title required','err'); return; }
-    storage.update(s=>{ s.documents.unshift({title:t,body:b,date:new Date().toISOString()}); s.activity.unshift({text:`Added document: ${t}`,date:new Date().toISOString()}); });
+    storage.update(s=>{
+      s.documents.unshift({title:t,body:b,date:new Date().toISOString()});
+      s.activity.unshift({text:`Added document: ${t}`,date:new Date().toISOString()});
+    });
     this.renderModule(); ui.toast('Document saved','ok');
   },
   deleteDocument(i) {
@@ -146,7 +241,7 @@ const appController = {
     });
   },
 
-  // ── YouTube
+  // ── YouTube ───────────────────────────────────────────────────────────────
   addYouTubeItem() {
     const text=document.getElementById('ytText')?.value?.trim();
     const type=document.getElementById('ytType')?.value;
@@ -156,7 +251,7 @@ const appController = {
   },
   deleteYouTubeItem(i) { storage.update(s=>{ s.youtubeData.splice(i,1); }); this.renderModule(); },
 
-  // ── AI Memory
+  // ── AI Memory ─────────────────────────────────────────────────────────────
   addAIMemory() {
     const text=document.getElementById('aiPromptInput')?.value?.trim();
     if (!text) return;
@@ -165,7 +260,7 @@ const appController = {
   },
   deleteAIMemory(i) { storage.update(s=>{ s.aiMemory.splice(i,1); }); this.renderModule(); },
 
-  // ── Business
+  // ── Business ──────────────────────────────────────────────────────────────
   addClient() {
     const name=document.getElementById('clientName')?.value?.trim();
     const email=document.getElementById('clientEmail')?.value?.trim();
@@ -183,7 +278,7 @@ const appController = {
   },
   deleteDomain(i) { storage.update(s=>{ s.domains.splice(i,1); }); this.renderModule(); },
 
-  // ── Content
+  // ── Content ───────────────────────────────────────────────────────────────
   addContentIdea() {
     const title=document.getElementById('ideaTitle')?.value?.trim();
     const platform=document.getElementById('ideaPlatform')?.value;
@@ -193,7 +288,7 @@ const appController = {
   },
   deleteContentIdea(i) { storage.update(s=>{ s.contentIdeas.splice(i,1); }); this.renderModule(); },
 
-  // ── Brands
+  // ── Brands ────────────────────────────────────────────────────────────────
   addBrand() {
     const name=document.getElementById('brandName')?.value?.trim();
     const color=document.getElementById('brandColor')?.value?.trim();
@@ -204,7 +299,7 @@ const appController = {
   },
   deleteBrand(i) { storage.update(s=>{ s.brandAssets.splice(i,1); }); this.renderModule(); },
 
-  // ── Repo Cleaner
+  // ── Repo Cleaner ──────────────────────────────────────────────────────────
   async rcLoadTokens() {
     const gh=document.getElementById('rcGhToken')?.value?.trim();
     const vc=document.getElementById('rcVcToken')?.value?.trim();
@@ -253,7 +348,7 @@ const appController = {
     });
   },
 
-  // ── Settings
+  // ── Settings ──────────────────────────────────────────────────────────────
   changePassword() {
     const np=prompt('New master password:');
     if (!np) return;
@@ -264,16 +359,19 @@ const appController = {
     const data=JSON.stringify(storage.get(),null,2);
     const blob=new Blob([data],{type:'application/json'});
     const a=document.createElement('a'); a.href=URL.createObjectURL(blob);
-    a.download='vault-os-backup.json'; a.click(); url=a.href; URL.revokeObjectURL(a.href);
+    a.download=`vault-os-backup-${new Date().toISOString().split('T')[0]}.json`;
+    a.click(); URL.revokeObjectURL(a.href);
     ui.toast('Exported!','ok');
   },
   importData() {
     const input=document.createElement('input'); input.type='file'; input.accept='.json';
     input.onchange=e=>{
-      const file=e.target.files[0];
-      if (!file) return;
+      const file=e.target.files[0]; if (!file) return;
       const reader=new FileReader();
-      reader.onload=ev=>{ try { const d=JSON.parse(ev.target.result); storage.set(d); this.render(); ui.toast('Imported!','ok'); } catch { ui.toast('Invalid file','err'); } };
+      reader.onload=ev=>{
+        try { const d=JSON.parse(ev.target.result); storage.set(d); this.render(); ui.toast('Imported!','ok'); }
+        catch { ui.toast('Invalid backup file','err'); }
+      };
       reader.readAsText(file);
     };
     input.click();
@@ -285,14 +383,15 @@ const appController = {
   },
 
   globalSearch(q) {
-    if (!q) return;
+    if (!q||q.length<2) return;
     const s=storage.get();
     const results=[
-      ...s.passwords.filter(x=>x.title.toLowerCase().includes(q.toLowerCase())).map(x=>({type:'password',label:x.title})),
-      ...s.notes.filter(x=>x.title.toLowerCase().includes(q.toLowerCase())).map(x=>({type:'note',label:x.title})),
+      ...s.passwords.filter(x=>x.title.toLowerCase().includes(q.toLowerCase())).map(x=>x.title),
+      ...s.notes.filter(x=>x.title.toLowerCase().includes(q.toLowerCase())).map(x=>x.title),
+      ...(s.serviceKeys||[]).filter(x=>x.label.toLowerCase().includes(q.toLowerCase())).map(x=>x.label),
     ];
-    if (results.length) ui.toast(`Found ${results.length} result(s): ${results[0].label}`,'ok');
-    else ui.toast('No results','warn');
+    if (results.length) ui.toast(`Found: ${results.slice(0,3).join(', ')}${results.length>3?'…':''}`, 'ok');
+    else ui.toast('No results found','warn');
   }
 };
 
